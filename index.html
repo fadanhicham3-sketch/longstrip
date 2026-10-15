@@ -71,6 +71,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .cont .btn { flex: none; }
 
 .tools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; }
+#grp[aria-pressed="true"] { background: var(--accent); color: #fff; }
 .tools label { font: 500 0.75rem/1 var(--font-mono); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
 select { min-height: 44px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); font: inherit; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 20px 16px; }
@@ -235,9 +236,6 @@ body.reading #toast { bottom: calc(150px + env(safe-area-inset-bottom, 0px)); }
 .chip { background:var(--accent); color:var(--accent-fg); border-radius:6px; font-weight:700; left:6px; top:6px; }
 .more { width:30px; height:30px; border-radius:50%; background:rgba(0,0,0,.5); color:#fff; right:6px; top:6px; z-index:3; }
 .grid:not(.lay-list) .open { position:relative; }
-.grid:not(.lay-list) .m { display:none; }
-.grid:not(.lay-list) .open::after { content:""; position:absolute; left:0; right:0; bottom:0; height:55%; border-radius:0 0 12px 12px; background:linear-gradient(transparent,rgba(0,0,0,.82)); pointer-events:none; z-index:1; }
-.grid:not(.lay-list) .t { position:absolute; left:10px; right:10px; bottom:12px; z-index:2; color:#fff; font-size:.8125rem; text-shadow:0 1px 3px rgba(0,0,0,.6); }
 .sv-title { font:700 1.6rem/1.1 var(--font-display); }
 .pill { border-radius:999px; }
 .panel, .panel.dark { border-radius:28px 28px 0 0; }
@@ -335,6 +333,24 @@ body { background: radial-gradient(900px 420px at 90% -8%, color-mix(in srgb, va
 .seg svg, #b-zoom svg { width:20px; height:20px; display:block; fill:none; stroke:currentColor; stroke-width:1.9; stroke-linecap:round; stroke-linejoin:round; }
 .play svg { width:20px; height:20px; display:block; }
 @media (prefers-reduced-motion: reduce) { .bar, #toast { transition: none; } }
+/* Gallery v2 */
+.grid { gap:26px 14px; }
+.cover { aspect-ratio:2 / 3; border-radius:10px; background:var(--surface); box-shadow:0 2px 8px rgba(0,0,0,.28), 0 0 0 1px color-mix(in srgb, var(--fg) 8%, transparent); }
+.cover img { object-position:center top; }
+.cover .bar-track { height:3px; }
+.open { gap:10px; }
+.info { min-width:0; flex:1; display:flex; flex-direction:column; gap:4px; padding:0 2px; }
+.info .t { font:600 .875rem/1.3 var(--font-body); letter-spacing:-.005em; color:var(--fg); }
+.info .m { font:500 .6875rem/1.3 var(--font-mono); letter-spacing:.02em; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.st.going { color:var(--accent); } .st.new { color:var(--fg); } .st.done { color:var(--muted); }
+.card.done .cover img { filter:saturate(.55) brightness(.7); }
+.card.done .cover::after { content:"\2713"; position:absolute; left:8px; bottom:10px; width:22px; height:22px; border-radius:50%; background:var(--accent); color:var(--accent-fg); font:700 .75rem/22px sans-serif; text-align:center; z-index:3; }
+#grid.lay-small { gap:18px 8px; }
+#grid.lay-small .info .m { display:none; }
+#grid.lay-small .info .t { font-size:.75rem; }
+#grid.lay-list .info .t { font-size:1rem; }
+#grid.lay-mosaic .card:nth-child(5n+1) .open { height:100%; }
+#grid.lay-mosaic .card:nth-child(5n+1) .cover { flex:1 1 auto; height:auto; min-height:260px; aspect-ratio:auto; }
 </style>
 
 <main class="wrap" id="lib">
@@ -362,7 +378,7 @@ body { background: radial-gradient(900px 420px at 90% -8%, color-mix(in srgb, va
     <button class="btn primary" id="cont-go" type="button">Resume</button>
     <div class="bar-track"><div class="bar-fill" id="cont-fill"></div></div>
   </section>
-  <p class="note">Name chapters like “Title 12” and they group into a series. Add a folder of chapter folders to bring in a whole series. Everything stays on this device.</p>
+  <p class="note">Files keep their own names. Turn on “Group by name” to merge chapters like “Title 12” into a series. Add a folder of chapter folders to bring in a whole series. Everything stays on this device.</p>
   <p class="warn" id="mem-note" hidden>This browser blocks storage here, so episodes will only last until you close this page.</p>
   <div class="tools">
     <label for="sort">Sort</label>
@@ -376,6 +392,7 @@ body { background: radial-gradient(900px 420px at 90% -8%, color-mix(in srgb, va
     <button class="btn" id="sort-dir" type="button" aria-label="Reverse sort direction"></button>
     <label for="lay">Layout</label>
     <select id="lay"><option value="grid">Grid</option><option value="big">Large</option><option value="small">Small</option><option value="mosaic">Mosaic</option><option value="list">List</option></select>
+    <button class="btn" id="grp" type="button" aria-pressed="false">Group by name</button>
     <input type="search" id="q" placeholder="Search your library" aria-label="Search library" autocomplete="off">
   </div>
   <div class="chips" id="chips" role="group" aria-label="Filter library"><button type="button" data-f="all">All</button><button type="button" data-f="reading">Reading</button><button type="button" data-f="unread">Unread</button><button type="button" data-f="done">Finished</button><button type="button" data-f="fav">Favorites</button></div>
@@ -510,7 +527,7 @@ body { background: radial-gradient(900px 420px at 90% -8%, color-mix(in srgb, va
 
   /* ---------- settings (per viewer, optional) ---------- */
   var SKEY = 'longstrip.settings.v1';
-  var settings = { width: 'fit', gap: 0, speed: 2, sort: 'name', dir: 'asc', autoNext: true, chDir: 'asc', bright: 100, warm: 0, mode: 'strip', lay: 'grid' };
+  var settings = { width: 'fit', gap: 0, speed: 2, sort: 'name', dir: 'asc', autoNext: true, chDir: 'asc', bright: 100, warm: 0, mode: 'strip', lay: 'grid', group: false };
   try { Object.assign(settings, JSON.parse(localStorage.getItem(SKEY) || '{}')); } catch (e) {}
   function saveSettings() { try { localStorage.setItem(SKEY, JSON.stringify(settings)); } catch (e) {} }
   try { if (!localStorage.getItem('longstrip.nextfix')) { settings.autoNext = true; localStorage.setItem('longstrip.nextfix', '1'); saveSettings(); } } catch (e) {}
@@ -561,12 +578,16 @@ body { background: radial-gradient(900px 420px at 90% -8%, color-mix(in srgb, va
   function mkCanvas(w, h) { var c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
   function canvasBlob(c, type, q) { return new Promise(function (r) { c.toBlob(r, type || 'image/jpeg', q || 0.86); }); }
   async function makeCover(blob) {
-    var b = await createImageBitmap(blob), W = 360, H = 480, c = mkCanvas(W, H), x = c.getContext('2d');
+    var b = await createImageBitmap(blob), W = 360, H = 540, c = mkCanvas(W, H), x = c.getContext('2d');
     x.fillStyle = '#14151B'; x.fillRect(0, 0, W, H);
-    var s = W / b.width, sh = Math.min(b.height, H / s);
-    x.drawImage(b, 0, 0, b.width, sh, 0, 0, W, sh * s);
+    var sx = 0, sy = 0, sw = b.width, sh = b.height, want = W / H;
+    if (sw / sh > 1.15) { sw = Math.round(sw / 2); if (settings.rtl) sx = b.width - sw; }
+    var r = sw / sh;
+    if (r > want) { var nw = Math.round(sh * want); sx += Math.round((sw - nw) / 2); sw = nw; }
+    else if (r < want) { sh = Math.round(sw / want); }
+    x.drawImage(b, sx, sy, sw, sh, 0, 0, W, H);
     if (b.close) b.close();
-    return canvasBlob(c, 'image/jpeg', 0.8);
+    return canvasBlob(c, 'image/jpeg', 0.82);
   }
 
   /* ---------- adding episodes ---------- */
@@ -581,7 +602,7 @@ body { background: radial-gradient(900px 420px at 90% -8%, color-mix(in srgb, va
     var id = 'ep_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     var cover = null; try { cover = await makeCover(pages[0].blob); } catch (e) {}
     var size = pages.reduce(function (s, p) { return s + (p.blob.size || 0); }, 0);
-    var meta = { id: id, title: title || 'Untitled', series: opts.series || '', created: Date.now(), count: pages.length, size: size, page: 0, frac: 0, pct: 0, lastRead: 0, cover: cover, sample: !!opts.sample };
+    var meta = { id: id, title: title || 'Untitled', series: opts.series || '', created: Date.now(), count: pages.length, size: size, page: 0, frac: 0, pct: 0, lastRead: 0, cover: cover, cv: 2, sample: !!opts.sample };
     try { await kv.put('pages', { id: id, pages: pages }); await kv.put('meta', meta); }
     catch (e) { try { await kv.del('pages', id); } catch (_) {} toast('Not enough storage to keep this episode. Free some space or add fewer images.', 5500); return false; }
     if (!opts.silent && !opts.quiet) toast(bad ? 'Added ' + pages.length + ' pages. ' + bad + ' skipped.' : 'Added ' + pages.length + ' pages.');
@@ -682,7 +703,7 @@ body { background: radial-gradient(900px 420px at 90% -8%, color-mix(in srgb, va
     var groups = new Map(), cand = new Map(), standalone = [];
     metas.forEach(function (m) {
       if (m.series) { addTo(groups, m.series, m); return; }
-      var b = autoBase(m.title);
+      var b = settings.group ? autoBase(m.title) : '';
       if (b) addTo(cand, b, m); else standalone.push(m);
     });
     cand.forEach(function (g, k) {
@@ -731,6 +752,28 @@ body { background: radial-gradient(900px 420px at 90% -8%, color-mix(in srgb, va
   function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
   function moreIcon() { return '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>'; }
 
+  var covBusy = false;
+  async function backfillCovers() {
+    if (covBusy) return;
+    try { if (localStorage.getItem('longstrip.covers.v2')) return; } catch (e) {}
+    covBusy = true;
+    var ids = metas.filter(function (m) { return m.cv !== 2; }).map(function (m) { return m.id; }), done = 0;
+    for (var i = 0; i < ids.length; i++) {
+      var m = metaById(ids[i]); if (!m) continue;
+      try {
+        var r = await kv.get('pages', m.id);
+        if (r && r.pages && r.pages[0]) {
+          var cv = await makeCover(r.pages[0].blob);
+          m = metaById(ids[i]);
+          if (cv && m) { m.cover = cv; m.cv = 2; await kv.put('meta', m); done++; if (done % 10 === 0) render(); }
+        }
+      } catch (e) {}
+    }
+    covBusy = false;
+    try { localStorage.setItem('longstrip.covers.v2', '1'); } catch (e) {}
+    if (done) render();
+  }
+  function prettyTitle(t) { return String(t || '').replace(/_+/g, ' ').replace(/\s{2,}/g, ' ').trim(); }
   async function backfillSizes() {
     var changed = false;
     for (var i = 0; i < metas.length; i++) {
@@ -743,7 +786,7 @@ body { background: radial-gradient(900px 420px at 90% -8%, color-mix(in srgb, va
   }
   async function refresh() {
     metas = await kv.all('meta');
-    render(); backfillSizes();
+    render(); backfillSizes(); backfillCovers();
   }
   function render() {
     buildLib();
@@ -771,7 +814,8 @@ body { background: radial-gradient(900px 420px at 90% -8%, color-mix(in srgb, va
     return nx ? { m: nx, label: 'Start', kicker: 'Up next' } : null;
   }
   function renderLib() {
-    var g = $('#grid'); g.textContent = ''; g.className = 'grid lay-' + settings.lay + (introOn ? ' intro' : ''); if (!introT) introT = setTimeout(function () { introOn = false; }, 1500); $('#lay').value = settings.lay;
+    var g = $('#grid'); g.textContent = ''; g.className = 'grid lay-' + settings.lay + (introOn ? ' intro' : ''); if (!introT) introT = setTimeout(function () { introOn = false; }, 1500); $('#lay').value = settings.lay; $('#grp').setAttribute('aria-pressed', String(!!settings.group));
+    var nt = document.querySelector('#lib > .note'); if (nt) nt.hidden = metas.length > 0;
     var nSeries = lib.seriesMap.size;
     $('#count').textContent = (nSeries ? nSeries + (nSeries === 1 ? ' series · ' : ' series · ') : '') + metas.length + (metas.length === 1 ? ' episode' : ' episodes');
     var ct = continueTarget(), cont = $('#cont');
@@ -798,11 +842,12 @@ body { background: radial-gradient(900px 420px at 90% -8%, color-mix(in srgb, va
         var m = it.m, pct = Math.round((m.pct || 0) * 100);
         open.setAttribute('aria-label', 'Read ' + m.title); more.setAttribute('aria-label', 'Manage ' + m.title);
         open.appendChild(coverEl(m.cover, m.title, m.sample ? 'Sample' : '', m.pct));
-        open.appendChild(el('div', 't', m.title));
-        var bits = [m.count + ' pages'], sz = fmtSize(m.size); if (sz) bits.push(sz);
-        open.appendChild(el('div', 'm', bits.join(' · ')));
         var status = pct >= 99 ? 'Finished' : pct > 0 ? pct + '% read' : 'Unread';
-        open.appendChild(el('div', 'm', settings.sort === 'added' ? 'Added ' + fmtDate(m.created) : settings.sort === 'read' ? (m.lastRead ? 'Read ' + fmtDate(m.lastRead) : 'Not read yet') : status));
+        var lead = settings.sort === 'added' ? 'Added ' + fmtDate(m.created) : settings.sort === 'read' ? (m.lastRead ? 'Read ' + fmtDate(m.lastRead) : 'Not read yet') : status;
+        var info = el('div', 'info'), mm = el('div', 'm');
+        mm.appendChild(el('span', 'st ' + (pct >= 99 ? 'done' : pct > 0 ? 'going' : 'new'), lead)); mm.appendChild(document.createTextNode(' \u00b7 ' + m.count + ' pages'));
+        info.appendChild(el('div', 't', prettyTitle(m.title))); info.appendChild(mm); open.appendChild(info);
+        if (pct >= 99) card.classList.add('done');
         open.addEventListener('click', function () { openReader(m.id); });
         more.addEventListener('click', function () { openEdit(m.id); });
       } else {
@@ -810,10 +855,11 @@ body { background: radial-gradient(900px 420px at 90% -8%, color-mix(in srgb, va
         var avg = sum(s.chapters, function (c) { return c.pct || 0; }) / n, cm = s.chapters.find(function (c) { return c.cover; });
         open.setAttribute('aria-label', 'Open series ' + s.name); more.setAttribute('aria-label', 'Manage series ' + s.name);
         open.appendChild(coverEl(cm && cm.cover, s.name, n + (n === 1 ? ' chapter' : ' chapters'), avg));
-        open.appendChild(el('div', 't', s.name));
-        var tb = [n + (n === 1 ? ' chapter' : ' chapters')], tsz = fmtSize(sum(s.chapters, function (c) { return c.size || 0; })); if (tsz) tb.push(tsz);
-        open.appendChild(el('div', 'm', tb.join(' · ')));
-        open.appendChild(el('div', 'm', settings.sort === 'added' ? 'Added ' + fmtDate(itemVal(it, 'added')) : settings.sort === 'read' ? (itemVal(it, 'read') ? 'Read ' + fmtDate(itemVal(it, 'read')) : 'Not read yet') : doneN + ' of ' + n + ' read'));
+        var slead = settings.sort === 'added' ? 'Added ' + fmtDate(itemVal(it, 'added')) : settings.sort === 'read' ? (itemVal(it, 'read') ? 'Read ' + fmtDate(itemVal(it, 'read')) : 'Not read yet') : doneN + ' of ' + n + ' read';
+        var sinfo = el('div', 'info'), smm = el('div', 'm');
+        smm.appendChild(el('span', 'st ' + (doneN === n ? 'done' : (doneN || avg > 0) ? 'going' : 'new'), slead));
+        sinfo.appendChild(el('div', 't', prettyTitle(s.name))); sinfo.appendChild(smm); open.appendChild(sinfo);
+        if (doneN === n) card.classList.add('done');
         open.addEventListener('click', function () { showSeries(s.key); });
         more.addEventListener('click', function () { openSeriesSheet(s.key); });
       }
@@ -1416,6 +1462,7 @@ body { background: radial-gradient(900px 420px at 90% -8%, color-mix(in srgb, va
   function n_(i) { return (i + 1) + ' / ' + cur.els.length; }
   $('#r-slider').addEventListener('change', function () { if (cur && /^(page|spread)$/.test(settings.mode)) galSet(cur.gi); });
   $('#s-rtl').addEventListener('change', function (e) { settings.rtl = e.target.checked; saveSettings(); if (cur && settings.mode === 'spread') galSet(cur.gi, true); });
+  $('#grp').addEventListener('click', function () { settings.group = !settings.group; saveSettings(); render(); });
   $('#lay').addEventListener('change', function (e) { settings.lay = e.target.value; saveSettings(); render(); });
 
   /* ---------- wiring ---------- */
