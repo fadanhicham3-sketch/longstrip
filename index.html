@@ -2301,16 +2301,32 @@ body {
     if (viewKey) return function () { viewKey = null; render(); window.scrollTo(0, 0); };
     return null;
   }
+  function goBackOneLayer() { var close = topLayer(); if (close) { close(); return true; } return false; }
+
+  /* Preferred: native Android back button via the Capacitor App plugin (needs @capacitor/app in the build) */
+  var nativeBack = false;
   try {
+    var C = window.Capacitor;
+    if (C && C.isNativePlatform && C.isNativePlatform() && C.isPluginAvailable && C.isPluginAvailable('App')) {
+      var CapApp = C.registerPlugin('App');
+      CapApp.addListener('backButton', function () {
+        if (!goBackOneLayer()) CapApp.exitApp();   /* exit only from the library home screen */
+      });
+      nativeBack = true;
+    }
+  } catch (e) {}
+
+  /* Fallback (browser / PWA, or build without the plugin): history-based back handling */
+  if (!nativeBack) try {
     history.replaceState({ ls: 'base' }, '');
     history.pushState({ ls: 'app' }, '');
-    /* browsers skip history entries added without a tap, so re-arm on touch */
-    document.addEventListener('pointerdown', function () {
+    /* history entries only count for Back if added during a real tap, so re-arm on every tap */
+    var rearm = function () {
       try { if (!history.state || history.state.ls !== 'app') history.pushState({ ls: 'app' }, ''); } catch (e) {}
-    }, true);
+    };
+    ['pointerup', 'touchend', 'click'].forEach(function (ev) { document.addEventListener(ev, rearm, true); });
     window.addEventListener('popstate', function () {
-      var close = topLayer();
-      if (close) close();
+      goBackOneLayer();
       try { history.pushState({ ls: 'app' }, ''); } catch (e) {}
     });
   } catch (e) {}
