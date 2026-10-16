@@ -145,6 +145,9 @@ select { min-height: 44px; padding: 0 12px; border-radius: 8px; border: 1px soli
   background: #1B1E29; color: #F2F3F7; font-size: 0.875rem; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
 }
 #toast.on { opacity: 1; transform: translate(-50%, 0); }
+#toast { overflow-wrap: anywhere; }
+#toast.prog { min-width: min(80vw, 280px); font-variant-numeric: tabular-nums; }
+#toast.prog::after { content: ""; display: block; height: 4px; margin-top: 9px; border-radius: 2px; background: linear-gradient(90deg, var(--accent) var(--p, 0%), rgba(255,255,255,0.22) var(--p, 0%)); }
 body.reading #toast { bottom: calc(150px + env(safe-area-inset-bottom, 0px)); }
 .dropping .grid { outline: 2px dashed var(--accent); outline-offset: 10px; }
 
@@ -901,6 +904,10 @@ body {
 :root[data-theme="light"] #grp[aria-pressed="true"] { background:#6040D7; color:#fff; }
 .setrow, .setrow.col > *, .swatches { flex-shrink: 0; }
 .swatches { width: 100%; align-self: stretch; }
+
+/* page counter overlay: only visible while the bars are showing */
+.gnum { transition: opacity .2s ease, visibility .2s; }
+#reader.ui-hidden .gnum { opacity: 0; visibility: hidden; }
 </style>
 </head>
 <body>
@@ -1107,11 +1114,18 @@ body {
   try { if (!localStorage.getItem('longstrip.nextfix')) { settings.autoNext = true; localStorage.setItem('longstrip.nextfix', '1'); saveSettings(); } } catch (e) {}
 
   var tt;
-  function toast(msg, ms) {
+  function toast(msg, ms, pct) {
     var t = $('#toast'); t.textContent = msg; t.classList.add('on');
+    if (typeof pct === 'number') { t.style.setProperty('--p', pct + '%'); t.classList.add('prog'); } else t.classList.remove('prog');
     clearTimeout(tt); tt = setTimeout(function () { t.classList.remove('on'); }, ms || 3200);
   }
   function clearToast() { clearTimeout(tt); $('#toast').classList.remove('on'); }
+  /* upload progress: each file/chapter owns a slice (base..base+span) of the overall 0-100% */
+  var upl = { base: 0, span: 1 };
+  function step(frac, text) {
+    var pct = Math.max(0, Math.min(100, Math.round((upl.base + upl.span * Math.max(0, Math.min(1, frac))) * 100)));
+    toast(text + ' \u00B7 ' + pct + '%', 60000, pct);
+  }
 
   /* ---------- storage: IndexedDB with in-memory fallback ---------- */
   var db = null, mem = { meta: new Map(), pages: new Map(), prefs: new Map() };
@@ -1167,16 +1181,68 @@ body {
   }
 
   /* ---------- adding episodes ---------- */
-  async function addEpisode(title, blobs, opts) {
+  /* run fn over items with at most n in flight */
+  async function pool(items, n, fn) {
+    var i = 0, out = new Array(items.length);
+    await Promise.all(Array.from({ length: Math.min(n, items.length) }, async function () {
+      while (i < items.length) { var k = i++; out[k] = await fn(items[k], k); }
+    }));
+    return out;
+  }
+  /* read width/height straight from the file header (no decoding) - much faster than decoding every page */
+  async function fastDims(blob) {
+    try {
+      var buf = new Uint8Array(await blob.slice(0, 65536).arrayBuffer()), n = buf.length, w, h;
+      if (n > 24 && buf[0] === 0x89 && buf[1] === 0x50) {
+        w = ((buf[16] << 24) | (buf[17] << 16) | (buf[18] << 8) | buf[19]) >>> 0; h = ((buf[20] << 24) | (buf[21] << 16) | (buf[22] << 8) | buf[23]) >>> 0;
+        return w > 0 && h > 0 && w < 65536 && h < 65536 ? [w, h] : null;
+      }
+      if (buf[0] === 0xFF && buf[1] === 0xD8) {
+        var p = 2;
+        while (p + 9 < n) {
+          if (buf[p] !== 0xFF) { p++; continue; }
+          var m = buf[p + 1];
+          if (m === 0xFF) { p++; continue; }
+          if (m === 0xE1 && buf[p + 4] === 0x45 && buf[p + 5] === 0x78) return null;   /* has EXIF (maybe rotated): decode instead */
+          if (m >= 0xC0 && m <= 0xCF && m !== 0xC4 && m !== 0xC8 && m !== 0xCC) {
+            h = (buf[p + 5] << 8) | buf[p + 6]; w = (buf[p + 7] << 8) | buf[p + 8];
+            return w > 0 && h > 0 ? [w, h] : null;
+          }
+          if (m === 0xD8 || m === 0x01 || (m >= 0xD0 && m <= 0xD7)) { p += 2; continue; }
+          p += 2 + ((buf[p + 2] << 8) | buf[p + 3]);
+        }
+        return null;
+      }
+      if (n > 30 && buf[0] === 0x52 && buf[1] === 0x49 && buf[8] === 0x57 && buf[9] === 0x45) {
+        var t = String.fromCharCode(buf[12], buf[13], buf[14], buf[15]);
+        if (t === 'VP8X') return [1 + (buf[24] | (buf[25] << 8) | (buf[26] << 16)), 1 + (buf[27] | (buf[28] << 8) | (buf[29] << 16))];
+        if (t === 'VP8L') { var bits = buf[21] | (buf[22] << 8) | (buf[23] << 16) | (buf[24] << 24); return [1 + (bits & 0x3FFF), 1 + ((bits >> 14) & 0x3FFF)]; }
+        if (t === 'VP8 ') return [(buf[26] | (buf[27] << 8)) & 0x3FFF, (buf[28] | (buf[29] << 8)) & 0x3FFF];
+      }
+    } catch (e) {}
+    return null;
+  }
+  async function prepEpisode(blobs, opts) {
     opts = opts || {};
-    var pages = [], bad = 0;
-    for (var i = 0; i < blobs.length; i++) {
-      if (!opts.silent) toast('Reading image ' + (i + 1) + ' of ' + blobs.length, 60000);
-      try { var d = await dims(blobs[i]); pages.push({ blob: blobs[i], w: d[0], h: d[1] }); } catch (e) { bad++; }
-    }
-    if (!pages.length) { toast('None of those files could be read as images.', 4500); return false; }
-    var id = 'ep_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    var done = 0;
+    var res = await pool(blobs, 6, async function (b) {
+      var r = null;
+      try { var d = (await fastDims(b)) || (await dims(b)); r = { blob: b, w: d[0], h: d[1] }; } catch (e) {}
+      done++;
+      if (opts.prog) { if (done % 4 === 0 || done === blobs.length) opts.prog(done / blobs.length, done, blobs.length); }
+      else if (!opts.silent) { upl.base = 0; upl.span = 1; step(0.95 * done / blobs.length, 'Reading image ' + done + ' of ' + blobs.length); }
+      return r;
+    });
+    var pages = res.filter(Boolean), bad = blobs.length - pages.length;
+    if (!pages.length) { toast('None of those files could be read as images.', 4500); return null; }
+    if (!opts.silent && !opts.prog) step(0.97, 'Saving');
     var cover = null; try { cover = await makeCover(pages[0].blob); } catch (e) {}
+    return { pages: pages, bad: bad, cover: cover };
+  }
+  async function saveEpisode(prep, title, opts) {
+    opts = opts || {};
+    var pages = prep.pages, bad = prep.bad, cover = prep.cover;
+    var id = 'ep_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     var size = pages.reduce(function (s, p) { return s + (p.blob.size || 0); }, 0);
     var meta = { id: id, title: title || 'Untitled', series: opts.series || '', sourcePath: opts.sourcePath || '', created: Date.now(), count: pages.length, size: size, page: 0, frac: 0, pct: 0, lastRead: 0, cover: cover, cv: 2, sample: !!opts.sample };
     try { await kv.put('pages', { id: id, pages: pages }); await kv.put('meta', meta); }
@@ -1184,21 +1250,33 @@ body {
     if (!opts.silent && !opts.quiet) toast(bad ? 'Added ' + pages.length + ' pages. ' + bad + ' skipped.' : 'Added ' + pages.length + ' pages.');
     return true;
   }
-  async function importZip(file) {
-    if (typeof JSZip === 'undefined') { toast('Could not load the CBZ reader. Check your connection and try again.', 4500); return; }
+  async function addEpisode(title, blobs, opts) {
+    var prep = await prepEpisode(blobs, opts);
+    return prep ? saveEpisode(prep, title, opts) : false;
+  }
+  /* open a CBZ/ZIP and read its pages (the slow part); saving is done separately so it can overlap the next file */
+  async function prepZip(file, opts) {
+    if (typeof JSZip === 'undefined') { toast('Could not load the CBZ reader. Check your connection and try again.', 4500); return null; }
     try {
-      toast('Opening ' + file.name, 60000);
+      step(0, 'Opening ' + file.name);
       var zip = await JSZip.loadAsync(file);
       var entries = Object.values(zip.files).filter(function (f) { return !f.dir && !/__MACOSX|(^|\/)\./.test(f.name) && imgExt.test(f.name); });
       entries.sort(byName);
-      var blobs = [];
-      for (var i = 0; i < entries.length; i++) {
-        var raw = await entries[i].async('blob');
-        blobs.push(new Blob([raw], { type: MIME[entries[i].name.split('.').pop().toLowerCase()] || 'image/jpeg' }));
-      }
-      if (!blobs.length) { toast('No images found inside ' + file.name + '.', 4500); return; }
-      await addEpisode(file.name.replace(zipExt, ''), blobs);
-    } catch (e) { toast('Could not open ' + file.name + '.', 4500); }
+      var got = 0;
+      var blobs = await pool(entries, 4, async function (en) {
+        var raw = await en.async('blob');
+        got++; if (got % 4 === 0 || got === entries.length) step(0.45 * got / entries.length, 'Extracting ' + file.name);
+        return raw.slice(0, raw.size, MIME[en.name.split('.').pop().toLowerCase()] || 'image/jpeg');
+      });
+      if (!blobs.length) { toast('No images found inside ' + file.name + '.', 4500); return null; }
+      var prep = await prepEpisode(blobs, { silent: true, prog: function (f) { step(0.45 + 0.5 * f, 'Reading ' + file.name); } });
+      return prep ? { prep: prep, title: file.name.replace(zipExt, '') } : null;
+    } catch (e) { toast('Could not open ' + file.name + '.', 4500); return null; }
+  }
+  async function importZip(file) {
+    upl.base = 0; upl.span = 1;
+    var p = await prepZip(file);
+    if (p) await saveEpisode(p.prep, p.title);
   }
   function guessName(files, folder) {
     if (folder) return folder;
@@ -1210,8 +1288,18 @@ body {
     var zips = files.filter(function (f) { return zipExt.test(f.name); });
     var imgs = files.filter(function (f) { return (f.type && f.type.indexOf('image/') === 0) || imgExt.test(f.name); });
     if (!zips.length && !imgs.length) { toast('Choose image files (JPG, PNG, WebP) or a CBZ/ZIP.', 4000); return; }
-    for (var i = 0; i < zips.length; i++) await importZip(zips[i]);
-    if (zips.length) await refresh();
+    if (zips.length) {
+      var prevSave = Promise.resolve(true), zAdded = 0;
+      for (var i = 0; i < zips.length; i++) {
+        upl.base = i / zips.length; upl.span = 1 / zips.length;
+        var zp = await prepZip(zips[i]);              /* read file N while file N-1 is still being saved */
+        await prevSave;
+        if (zp) prevSave = saveEpisode(zp.prep, zp.title, { quiet: zips.length > 1 }).then(function (ok) { if (ok) zAdded++; return ok; });
+      }
+      await prevSave;
+      if (zips.length > 1) toast('Added ' + zAdded + (zAdded === 1 ? ' episode.' : ' episodes.'));
+      await refresh();
+    }
     if (imgs.length) {
       var groups = new Map();
       imgs.forEach(function (f) {
@@ -1222,11 +1310,16 @@ body {
       if (groups.size > 1) {
         var keys = Array.from(groups.keys()).sort(function (a, b) { return collator.compare(a, b); }), added = 0;
         var seriesName = keys[0].split('/')[0];
+        var prevCh = Promise.resolve(true);
         for (var k = 0; k < keys.length; k++) {
-          toast('Adding chapter ' + (k + 1) + ' of ' + keys.length, 60000);
-          var ok = await addEpisode(keys[k].split('/').pop(), orderFiles(groups.get(keys[k]), 'name', false), { quiet: true, series: seriesName });
-          if (ok) added++;
+          upl.base = k / keys.length; upl.span = 1 / keys.length;
+          var kk = k;
+          step(0, 'Adding chapter ' + (k + 1) + ' of ' + keys.length);
+          var chPrep = await prepEpisode(orderFiles(groups.get(keys[k]), 'name', false), { silent: true, prog: function (f) { step(0.95 * f, 'Adding chapter ' + (kk + 1) + ' of ' + keys.length); } });
+          await prevCh;
+          if (chPrep) prevCh = saveEpisode(chPrep, keys[k].split('/').pop(), { quiet: true, series: seriesName }).then(function (ok) { if (ok) added++; return ok; });
         }
+        await prevCh;
         toast('Added ' + added + (added === 1 ? ' chapter' : ' chapters') + ' to ' + seriesName + '.'); await refresh();
       } else {
         var only = groups.keys().next().value;
@@ -1900,12 +1993,20 @@ body {
   function zoomPg(e) {
     var s = cur && cur.sl && cur.sl[1]; if (!s) return;
     if (cur.z) { cur.z = null; s.style.scale = ''; s.style.translate = ''; zbState(); return; }
-    var r = gal.getBoundingClientRect(), ox = e.clientX - r.left, oy = e.clientY - r.top;
-    cur.z = { s: 2.4, o: [ox, oy], tx: 0, ty: 0, el: s }; s.style.transformOrigin = ox + 'px ' + oy + 'px'; s.style.scale = 2.4; zbState();
+    /* zoom so the page(s) fully COVER the screen (no empty bars), centred on the tapped spot */
+    var r = gal.getBoundingClientRect(), gw = r.width, gh = r.height, L = 1e9, T = 1e9, R = -1e9, B = -1e9;
+    s.querySelectorAll('img').forEach(function (im) { var q = im.getBoundingClientRect(); L = Math.min(L, q.left); T = Math.min(T, q.top); R = Math.max(R, q.right); B = Math.max(B, q.bottom); });
+    var iw = Math.max(1, R - L), ih = Math.max(1, B - T);
+    var k = Math.max(gw / iw, gh / ih), z = k >= 1.2 ? k : Math.max(k, 2.2);
+    var cx = gw / 2, cy = gh / 2, px = (e && e.clientX != null ? e.clientX : r.left + cx) - r.left, py = (e && e.clientY != null ? e.clientY : r.top + cy) - r.top;
+    cur.z = { s: z, mx: Math.max(0, (iw * z - gw) / 2), my: Math.max(0, (ih * z - gh) / 2), el: s, tx: 0, ty: 0 };
+    s.style.transformOrigin = cx + 'px ' + cy + 'px'; s.style.scale = z;
+    zpApply((1 - z) * (px - cx), (1 - z) * (py - cy));
+    zbState();
   }
   function zpApply(tx, ty) {
-    var z = cur.z, k = z.s - 1;
-    z.tx = Math.max(-k * (gal.clientWidth - z.o[0]), Math.min(k * z.o[0], tx)); z.ty = Math.max(-k * (gal.clientHeight - z.o[1]), Math.min(k * z.o[1], ty));
+    var z = cur.z;
+    z.tx = Math.max(-z.mx, Math.min(z.mx, tx)); z.ty = Math.max(-z.my, Math.min(z.my, ty));
     z.el.style.translate = z.tx + 'px ' + z.ty + 'px';
   }
   var zp = null;
@@ -2112,6 +2213,7 @@ body {
       toast('Scanning ' + (handle.name || 'folder') + '…', 60000);
       var result = await collectImageFolders(handle), added = 0, skipped = 0;
       var paths = Array.from(result.groups.keys()).sort(function (a,b) { return collator.compare(a,b); });
+      var prevFs = Promise.resolve(true);
       for (var i = 0; i < paths.length; i++) {
         var path = paths[i], files = result.groups.get(path);
         if (!files || !files.length) continue;
@@ -2120,9 +2222,11 @@ body {
         files.sort(byName);
         var parts = path.split('/').filter(Boolean), title = parts[parts.length - 1] || handle.name;
         var series = parts.length >= 2 ? parts[0] : '';
-        var ok = await addEpisode(title, files, { quiet:true, series:series, sourcePath:sourcePath });
-        if (ok) added++;
+        var fp = await prepEpisode(files, { silent:true });
+        await prevFs;
+        if (fp) prevFs = saveEpisode(fp, title, { quiet:true, series:series, sourcePath:sourcePath }).then(function (ok) { if (ok) added++; return ok; });
       }
+      await prevFs;
       await refresh();
       if (!result.files) toast('No supported images found in that folder.', 4500);
       else toast('Folder scan complete: ' + added + ' new ' + (added === 1 ? 'chapter' : 'chapters') + (skipped ? ', ' + skipped + ' already imported' : '') + '.', 5000);
